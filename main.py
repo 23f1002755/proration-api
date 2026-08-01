@@ -1,74 +1,71 @@
 from fastapi import FastAPI
-from urllib.parse import urlparse
-from pathlib import PurePosixPath
+from pydantic import BaseModel
+import re
 
 app = FastAPI()
 
-SECRET = PurePosixPath("/home/agent/credentials.env")
-BUILD = PurePosixPath("/home/agent/workspace/build")
-
+class Request(BaseModel):
+    skill: str
 
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {"status":"running"}
 
+@app.post("/scan")
+def scan(req: Request):
 
-@app.post("/check")
-def check(req: dict):
+    text=req.skill.lower()
 
-    tool = req.get("tool")
+    cats=[]
 
-    if tool == "bash":
-        cmd = req.get("command", "")
+    # -----------------
+    # hardcoded_secret
+    # -----------------
 
-        if (
-            "credentials.env" in cmd
-            or "~/credentials.env" in cmd
-            or "/home/agent/credentials.env" in cmd
-        ):
-            return {
-                "decision": "block",
-                "reason": "Protected credentials file."
-            }
+    if (
+        "akia" in text or
+        "service_token=" in text or
+        "api_key=" in text or
+        "secret_key=" in text or
+        "authorization: bearer" in text
+    ):
+        cats.append("hardcoded_secret")
 
-        return {
-            "decision": "allow",
-            "reason": "Command allowed."
-        }
+    # -----------------
+    # prompt injection
+    # -----------------
 
-    elif tool == "write_file":
+    if any(x in text for x in [
+        "ignore that request",
+        "ignore previous",
+        "keep running",
+        "background",
+        "silently",
+        "without surfacing"
+    ]):
+        cats.append("prompt_injection")
 
-        path = PurePosixPath(req.get("path", ""))
+    # -----------------
+    # excessive permissions
+    # -----------------
 
-        try:
-            path.relative_to(BUILD)
-            return {
-                "decision": "allow",
-                "reason": "Write inside build directory."
-            }
-        except Exception:
-            return {
-                "decision": "block",
-                "reason": "Write outside build directory."
-            }
+    if (
+        "entire filesystem" in text or
+        "network: all" in text or
+        "network: internet" in text or
+        "egress: *" in text
+    ):
+        cats.append("excessive_permissions")
 
-    elif tool == "http_request":
+    # -----------------
+    # unclear provenance
+    # -----------------
 
-        url = req.get("url", "")
-        host = urlparse(url).hostname or ""
+    if (
+        "author:" not in text or
+        "version:" not in text or
+        "changelog:" not in text
+    ):
+        cats.append("unclear_provenance")
 
-        if host in ["pypi.org", "registry.npmjs.org"]:
-            return {
-                "decision": "allow",
-                "reason": "Allowed host."
-            }
-
-        return {
-            "decision": "block",
-            "reason": "Host not allowed."
-        }
-
-    return {
-        "decision": "block",
-        "reason": "Unknown tool."
-    }
+    return {"categories":cats}
