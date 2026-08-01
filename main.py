@@ -1,71 +1,100 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import re
+from typing import List, Dict
+import json
 
 app = FastAPI()
 
+
+class Step(BaseModel):
+    step_number:int
+    tool:str
+    args:Dict
+    tokens_used:int
+
+
 class Request(BaseModel):
-    skill: str
+    budget_tokens:int
+    steps:List[Step]
+
+
+def normalize(obj):
+    if isinstance(obj,dict):
+        return {
+            k:normalize(v)
+            for k,v in sorted(obj.items())
+            if k!="request_id"
+        }
+
+    if isinstance(obj,list):
+        return [normalize(x) for x in obj]
+
+    if isinstance(obj,str):
+        return obj.strip()
+
+    return obj
+
 
 @app.get("/")
 def root():
     return {"status":"running"}
 
-@app.post("/scan")
-def scan(req: Request):
 
-    text=req.skill.lower()
+@app.post("/check")
+def check(req:Request):
 
-    cats=[]
+    total=sum(x.tokens_used for x in req.steps)
 
-    # -----------------
-    # hardcoded_secret
-    # -----------------
+    if total>=req.budget_tokens:
+        return {
+            "decision":"halt",
+            "reason":"Budget exhausted."
+        }
 
-    if (
-        "akia" in text or
-        "service_token=" in text or
-        "api_key=" in text or
-        "secret_key=" in text or
-        "authorization: bearer" in text
-    ):
-        cats.append("hardcoded_secret")
+    steps=req.steps
 
-    # -----------------
-    # prompt injection
-    # -----------------
+    # same tool repeated 3+
+    if len(steps)>=3:
 
-    if any(x in text for x in [
-        "ignore that request",
-        "ignore previous",
-        "keep running",
-        "background",
-        "silently",
-        "without surfacing"
-    ]):
-        cats.append("prompt_injection")
+        a=steps[-1]
+        b=steps[-2]
+        c=steps[-3]
 
-    # -----------------
-    # excessive permissions
-    # -----------------
+        if (
+            a.tool==b.tool==c.tool and
+            normalize(a.args)==normalize(b.args)==normalize(c.args)
+        ):
+            return {
+                "decision":"halt",
+                "reason":"Repeated tool loop."
+            }
 
-    if (
-        "entire filesystem" in text or
-        "network: all" in text or
-        "network: internet" in text or
-        "egress: *" in text
-    ):
-        cats.append("excessive_permissions")
+    # ABABAB
+    if len(steps)>=6:
 
-    # -----------------
-    # unclear provenance
-    # -----------------
+        last=steps[-6:]
 
-    if (
-        "author:" not in text or
-        "version:" not in text or
-        "changelog:" not in text
-    ):
-        cats.append("unclear_provenance")
+        sig=[]
 
-    return {"categories":cats}
+        for s in last:
+            sig.append(
+                (
+                    s.tool,
+                    json.dumps(normalize(s.args),sort_keys=True)
+                )
+            )
+
+        if (
+            sig[0]==sig[2]==sig[4] and
+            sig[1]==sig[3]==sig[5] and
+            sig[0]!=sig[1]
+        ):
+            return {
+                "decision":"halt",
+                "reason":"Alternating loop."
+            }
+
+    return {
+        "decision":"continue",
+        "reason":"Budget available and no loop detected."
+    }
