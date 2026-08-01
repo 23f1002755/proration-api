@@ -1,49 +1,74 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from urllib.parse import urlparse
+from pathlib import PurePosixPath
 
 app = FastAPI()
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+SECRET = PurePosixPath("/home/agent/credentials.env")
+BUILD = PurePosixPath("/home/agent/workspace/build")
 
-# Request Model
-class ChargeRequest(BaseModel):
-    old_price: float
-    new_price: float
-    days_remaining: int
-    days_in_actual_month: int
-    spec: str
-
-# Response Model
-class ChargeResponse(BaseModel):
-    charge: float
 
 @app.get("/")
 def root():
-    return {"message": "Proration API Running"}
+    return {"status": "running"}
 
-@app.post("/charge", response_model=ChargeResponse)
-def calculate(req: ChargeRequest):
 
-    difference = req.new_price - req.old_price
+@app.post("/check")
+def check(req: dict):
 
-    if req.spec == "v1":
-        charge = difference * (req.days_remaining / 30)
+    tool = req.get("tool")
 
-    elif req.spec == "v2":
-        charge = difference * (
-            req.days_remaining / req.days_in_actual_month
-        )
+    if tool == "bash":
+        cmd = req.get("command", "")
 
-    else:
-        charge = 0
+        if (
+            "credentials.env" in cmd
+            or "~/credentials.env" in cmd
+            or "/home/agent/credentials.env" in cmd
+        ):
+            return {
+                "decision": "block",
+                "reason": "Protected credentials file."
+            }
+
+        return {
+            "decision": "allow",
+            "reason": "Command allowed."
+        }
+
+    elif tool == "write_file":
+
+        path = PurePosixPath(req.get("path", ""))
+
+        try:
+            path.relative_to(BUILD)
+            return {
+                "decision": "allow",
+                "reason": "Write inside build directory."
+            }
+        except Exception:
+            return {
+                "decision": "block",
+                "reason": "Write outside build directory."
+            }
+
+    elif tool == "http_request":
+
+        url = req.get("url", "")
+        host = urlparse(url).hostname or ""
+
+        if host in ["pypi.org", "registry.npmjs.org"]:
+            return {
+                "decision": "allow",
+                "reason": "Allowed host."
+            }
+
+        return {
+            "decision": "block",
+            "reason": "Host not allowed."
+        }
 
     return {
-        "charge": round(charge, 2)
+        "decision": "block",
+        "reason": "Unknown tool."
     }
